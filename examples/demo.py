@@ -38,9 +38,17 @@ class View:
         self.mask_id = np.ones(joints_2d.shape[0])
         cv2.namedWindow('%d_view' % self.vid)
         cv2.moveWindow('%d_view' % self.vid, self.vid % 3 * 512, self.vid // 3 * 512)
+    def views_group(self, views_group):
+        self.views = views_group
     def init(self):
         def call_back(event, x, y, flags, param):
             if event == cv2.EVENT_LBUTTONDBLCLK:
+                if self.erase_id != -1:
+                    self.mask_id[self.erase_id] = 0
+                    self.joints_2d[self.erase_id, :] = 0
+                    self.draw()
+                    self.erase_id = -1
+                    return
                 min_dis = 1e9
                 min_i = -1
                 for i in range(self.joints_2d.shape[0]):
@@ -50,6 +58,21 @@ class View:
                 self.mask_id[min_i] = 0
                 self.joints_2d[min_i, :] = 0
                 self.draw()
+                return
+            if event == cv2.EVENT_RBUTTONDBLCLK:
+                min_dis = 1e9
+                min_i = -1
+                for i in range(self.joints_2d.shape[0]):
+                    if (x - self.joints_2d[i, 0]) ** 2 + (y - self.joints_2d[i, 1]) ** 2 < min_dis:
+                        min_dis = (x - self.joints_2d[i, 0]) ** 2 + (y - self.joints_2d[i, 1]) ** 2
+                        min_i = i
+                for view in self.views:
+                    if view.erase_id != -1 and view.erase_id != min_i:
+                        return
+                for view in self.views:
+                    view.erase_id = min_i
+                    view.draw()
+                return
             if event == cv2.EVENT_LBUTTONDOWN:
                 if self.erase_id != -1:
                     self.joints_2d[self.erase_id, 0] = x
@@ -123,7 +146,7 @@ def main(model_folder,
     scene.add_light(light2)
     intrinsic = np.load('dataset/650/0_intrinsic.npy')
     extrinsic = np.load('dataset/650/0_extrinsic.npy')
-    camera.set_intrinsic(intrinsic[0, 0], intrinsic[1, 1], intrinsic[0, 2], intrinsic[1, 2])
+    camera.set_intrinsic(intrinsic[0, 0], -intrinsic[1, 1], intrinsic[0, 2], 512-intrinsic[1, 2])
     pos = -extrinsic[:3, :3].T @ extrinsic[:3, 3]
     trans = extrinsic[:3, :3].T
     camera.pos_py = [pos[i] for i in range(3)]
@@ -148,7 +171,7 @@ def main(model_folder,
     pose.requires_grad = True
     print(global_o.shape, pose.shape)
 
-    optim = torch.optim.Adam([trans, global_o], lr=1e-1)
+    optim = torch.optim.Adam([trans], lr=1e-1)
     for i in range(300):
         output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
                        return_verts=True, global_orient=global_o)
@@ -167,7 +190,7 @@ def main(model_folder,
             scene.render()  # render the model(s) into image
             gui.set_image(camera.img)  # display the result image
             gui.show()
-    optim = torch.optim.Adam([trans, global_o, pose], lr=1e-2)
+    optim = torch.optim.Adam([trans, pose], lr=1e-2)
     for i in range(300):
         output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
                        return_verts=True, global_orient=global_o)
@@ -187,7 +210,7 @@ def main(model_folder,
             scene.render()  # render the model(s) into image
             gui.set_image(camera.img)  # display the result image
             gui.show()
-    optim = torch.optim.Adam([trans, pose, global_o, betas, expression], lr=1e-2)
+    optim = torch.optim.Adam([trans, pose, betas, expression], lr=1e-2)
     for i in range(1000):
         output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
                        return_verts=True, global_orient=global_o)
@@ -238,6 +261,8 @@ def main(model_folder,
         view_list.append(view)
         ex_list.append(torch.from_numpy(extrinsic).float())
         in_list.append(torch.from_numpy(intrinsic).float())
+    for vid in range(6):
+        view_list[vid].views_group(view_list)
 
     while 1:
         if cv2.waitKey(20) & 0xFF == 27:
@@ -311,7 +336,8 @@ def main(model_folder,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='SMPL-X Demo')
-
+    parser.add_argument('--dataroot', type=str)
+    parser.add_argument('--yaw_list', type=int, nargs='+')
     parser.add_argument('--model-folder', required=True, type=str,
                         help='The path to the model folder')
     parser.add_argument('--model-type', default='smplx', type=str,
