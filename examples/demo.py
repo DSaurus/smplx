@@ -37,7 +37,7 @@ class View:
         self.erase_id = -1
         self.mask_id = np.ones(joints_2d.shape[0])
         cv2.namedWindow('%d_view' % self.vid)
-        cv2.moveWindow('%d_view' % self.vid, self.vid % 3 * 512, self.vid // 3 * 512)
+        cv2.moveWindow('%d_view' % self.vid, 256 + self.vid % 3 * 512, self.vid // 3 * 512)
     def views_group(self, views_group):
         self.views = views_group
     def init(self):
@@ -257,7 +257,7 @@ def main(model_folder,
                         gui.set_image(camera.img)  # display the result image
                         gui.show()
                         print(loss.item())
-            print('optim finished')
+            print('optim finished, press c to next step or other key to continue optimization.')
             if cv2.waitKey() == ord('c'):
                 break
 
@@ -290,6 +290,7 @@ def main(model_folder,
             view_list[vid].views_group(view_list)
 
         while 1:
+            print('press c to next step.')
             if cv2.waitKey() == ord('c'):
                 break
 
@@ -319,7 +320,7 @@ def main(model_folder,
                     pts = pts.T
                     view_list[vid].joints_3d = pts.detach().cpu().numpy()
                     view_list[vid].draw()
-                print('optim finished')
+                print('optim finished, press c to next step or other key to continue optimization.')
                 if cv2.waitKey() == ord('c'):
                     break
 
