@@ -31,7 +31,9 @@ from pyflann import *
 def skinning(lbs, A, verts):
     # 5. Do skinning:
     # W is N x V x (J + 1)
-    print(A.shape)
+    lbs = lbs.detach().cpu()
+    A = A.detach().cpu()
+    verts = verts.detach().cpu()
     W = lbs.unsqueeze(dim=0).expand([1, -1, -1])
     # (N x V x (J + 1)) x (N x (J + 1) x 16)
     T = torch.matmul(W, A.reshape(1, 55, 16)) \
@@ -52,44 +54,42 @@ def main(model_folder,
          use_face_contour=False):
     import os
     import sys
-
+    device = torch.device('cuda:0')
     model = smplx.create(model_folder, model_type=model_type,
                          gender=gender, use_face_contour=use_face_contour,
                          num_betas=num_betas,
                          num_expression_coeffs=num_expression_coeffs,
                          ext=ext)
-
-    betas = torch.randn([1, model.num_betas], dtype=torch.float32, requires_grad=True)
-    expression = torch.randn([1, model.num_expression_coeffs], dtype=torch.float32, requires_grad=True)
-    trans = torch.randn([1, 3], requires_grad=True)
-    pose = torch.zeros((1, model.NUM_BODY_JOINTS * 3))
+    model = model.to(device)
+    betas = torch.randn([1, model.num_betas], device=device, dtype=torch.float32, requires_grad=True)
+    expression = torch.randn([1, model.num_expression_coeffs], device=device, dtype=torch.float32, requires_grad=True)
+    trans = torch.randn([1, 3], device=device, requires_grad=True)
+    pose = torch.zeros((1, model.NUM_BODY_JOINTS * 3), device=device)
     pose.requires_grad = True
+    g_o = torch.zeros((1, 3), device=device)
+    g_o.requires_grad = True
 
-    smpl_dir = os.path.join(dataroot, 'smplx')
-    img_dir = os.path.join(dataroot, 'img')
-    par_dir = os.path.join(dataroot, 'parameter')
-    subjects = os.listdir(os.path.join(smpl_dir))
     is_init = False
 
     ti.init(ti.cpu)
-    obj = t3.readobj(os.path.join(smpl_dir, '200', 'smplx.obj'))
+    obj = t3.readobj(os.path.join(dataroot, '200.obj'))
     obj['vi'][:, 0] = -obj['vi'][:, 0]
     obj['vi'][:, 2] = -obj['vi'][:, 2]
     # taichi show
     scene = t3.Scene()
-    camera = t3.Camera()
+    camera = t3.Camera(pos=[0, 0, -5])
     scene.add_camera(camera)
     light = t3.Light()
     scene.add_light(light)
     light2 = t3.Light([0, 0, -1])
     scene.add_light(light2)
-    intrinsic = np.load(os.path.join(par_dir, '650', '%d_intrinsic.npy' % 0))
-    extrinsic = np.load(os.path.join(par_dir, '650', '%d_extrinsic.npy' % 0))
-    camera.set_intrinsic(intrinsic[0, 0], -intrinsic[1, 1], intrinsic[0, 2], 512 - intrinsic[1, 2])
-    pos = -extrinsic[:3, :3].T @ extrinsic[:3, 3]
-    tr = extrinsic[:3, :3].T
-    camera.pos_py = [pos[i] for i in range(3)]
-    camera.trans_py = [[tr[i, j] for j in range(3)] for i in range(3)]
+    # intrinsic = np.load(os.path.join('dataset/parameter', '650', '%d_intrinsic.npy' % 0))
+    # extrinsic = np.load(os.path.join('dataset/parameter', '650', '%d_extrinsic.npy' % 0))
+    # camera.set_intrinsic(intrinsic[0, 0], -intrinsic[1, 1], intrinsic[0, 2], 512 - intrinsic[1, 2])
+    # pos = -extrinsic[:3, :3].T @ extrinsic[:3, 3]
+    # tr = extrinsic[:3, :3].T
+    # camera.pos_py = [pos[i] for i in range(3)]
+    # camera.trans_py = [[tr[i, j] for j in range(3)] for i in range(3)]
 
     t3_m = t3.Model(obj=obj)
     scene.add_model(t3_m)
@@ -98,160 +98,163 @@ def main(model_folder,
     cv2.namedWindow('view_0')
     cv2.imshow('view_0', np.zeros((512, 512, 3)))
 
-    while 1:
-        if not is_init:
-            optim = torch.optim.Adam([trans], lr=1e-1)
-            for i in range(300):
-                output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
-                               return_verts=True)
-                verts = output.vertices
-                gt_v = torch.FloatTensor(obj['vi']).unsqueeze(0)
-                loss = torch.nn.functional.mse_loss(verts, gt_v)
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
-                print(loss.item())
-                if i % 100 == 0:
-                    vs = verts.detach().numpy().squeeze()
-                    vs[:, 0] = -vs[:, 0]
-                    vs[:, 2] = -vs[:, 2]
-                    t3_m.vi.from_numpy(vs)
-                    scene.render()  # render the model(s) into image
-                    gui.set_image(camera.img)  # display the result image
-                    gui.show()
-            optim = torch.optim.Adam([trans, pose], lr=1e-2)
-            for i in range(300):
-                output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
-                               return_verts=True)
-                verts = output.vertices
-                gt_v = torch.FloatTensor(obj['vi']).unsqueeze(0)
-                loss = torch.nn.functional.mse_loss(verts, gt_v)
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
-                if i % 500 == 0:
-                    print(i, loss.item())
-                if i % 30 == 0:
-                    vs = verts.detach().numpy().squeeze()
-                    vs[:, 0] = -vs[:, 0]
-                    vs[:, 2] = -vs[:, 2]
-                    t3_m.vi.from_numpy(vs)
-                    scene.render()  # render the model(s) into image
-                    gui.set_image(camera.img)  # display the result image
-                    gui.show()
-            optim = torch.optim.Adam([trans, pose, betas, expression], lr=1e-2)
-            for i in range(1000):
-                output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
-                               return_verts=True)
-                verts = output.vertices
-                gt_v = torch.FloatTensor(obj['vi']).unsqueeze(0)
-                loss = torch.nn.functional.mse_loss(verts, gt_v)
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
-                if i % 30 == 0:
-                    vs = verts.detach().numpy().squeeze()
-                    vs[:, 0] = -vs[:, 0]
-                    vs[:, 2] = -vs[:, 2]
-                    t3_m.vi.from_numpy(vs)
-                    scene.render()  # render the model(s) into image
-                    gui.set_image(camera.img)  # display the result image
-                    gui.show()
+    T = 2
+    for subject in range(200, 260-T):
+        obj = t3.readobj(os.path.join(dataroot, '%d.obj' % subject))
+        obj['vi'][:, 0] = -obj['vi'][:, 0]
+        obj['vi'][:, 2] = -obj['vi'][:, 2]
+        while 1:
+            if not is_init:
+                optim = torch.optim.Adam([trans, g_o], lr=1e-1)
+                gt_v = torch.FloatTensor(obj['vi']).unsqueeze(0).to(device)
+                for i in range(300):
+                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
+                                   return_verts=True)
+                    verts = output.vertices
+                    loss = torch.nn.functional.mse_loss(verts, gt_v)
+                    optim.zero_grad()
+                    loss.backward()
+                    optim.step()
                     print(loss.item())
-            is_init = True
-        else:
-            optim = torch.optim.Adam([trans, pose, betas, expression], lr=1e-2)
-            for i in range(200):
-                output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
-                               return_verts=True)
-                verts = output.vertices
-                gt_v = torch.FloatTensor(obj['vi']).unsqueeze(0)
-                loss = torch.nn.functional.mse_loss(verts, gt_v)
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
-                if i % 30 == 0:
-                    vs = verts.detach().numpy().squeeze()
-                    vs[:, 0] = -vs[:, 0]
-                    vs[:, 2] = -vs[:, 2]
-                    t3_m.vi.from_numpy(vs)
-                    scene.render()  # render the model(s) into image
-                    gui.set_image(camera.img)  # display the result image
-                    gui.show()
-                    print(loss.item())
-        print('optim finished, press c to next step or other key to continue optimization.')
-        if cv2.waitKey() == ord('c'):
+                    if i % 100 == 0:
+                        vs = verts.detach().cpu().numpy().squeeze()
+                        vs[:, 0] = -vs[:, 0]
+                        vs[:, 2] = -vs[:, 2]
+                        t3_m.vi.from_numpy(vs)
+                        scene.render()  # render the model(s) into image
+                        gui.set_image(camera.img)  # display the result image
+                        gui.show()
+                optim = torch.optim.Adam([trans, g_o, pose], lr=1e-2)
+                for i in range(300):
+                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
+                                   return_verts=True)
+                    verts = output.vertices
+                    loss = torch.nn.functional.mse_loss(verts, gt_v)
+                    optim.zero_grad()
+                    loss.backward()
+                    optim.step()
+                    if i % 500 == 0:
+                        print(i, loss.item())
+                    if i % 30 == 0:
+                        vs = verts.detach().cpu().numpy().squeeze()
+                        vs[:, 0] = -vs[:, 0]
+                        vs[:, 2] = -vs[:, 2]
+                        t3_m.vi.from_numpy(vs)
+                        scene.render()  # render the model(s) into image
+                        gui.set_image(camera.img)  # display the result image
+                        gui.show()
+                optim = torch.optim.Adam([trans, g_o, pose, betas, expression], lr=1e-2)
+                for i in range(1000):
+                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
+                                   return_verts=True)
+                    verts = output.vertices
+                    loss = torch.nn.functional.mse_loss(verts, gt_v)
+                    optim.zero_grad()
+                    loss.backward()
+                    optim.step()
+                    if i % 30 == 0:
+                        vs = verts.detach().cpu().numpy().squeeze()
+                        vs[:, 0] = -vs[:, 0]
+                        vs[:, 2] = -vs[:, 2]
+                        t3_m.vi.from_numpy(vs)
+                        scene.render()  # render the model(s) into image
+                        gui.set_image(camera.img)  # display the result image
+                        gui.show()
+                        print(loss.item())
+                is_init = True
+            else:
+                gt_v = torch.FloatTensor(obj['vi']).unsqueeze(0).to(device)
+                optim = torch.optim.Adam([trans, g_o, pose, betas, expression], lr=1e-2)
+                for i in range(200):
+                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
+                                   return_verts=True)
+                    verts = output.vertices
+                    loss = torch.nn.functional.mse_loss(verts, gt_v)
+                    optim.zero_grad()
+                    loss.backward()
+                    optim.step()
+                    if i % 30 == 0:
+                        vs = verts.detach().cpu().numpy().squeeze()
+                        vs[:, 0] = -vs[:, 0]
+                        vs[:, 2] = -vs[:, 2]
+                        t3_m.vi.from_numpy(vs)
+                        scene.render()  # render the model(s) into image
+                        gui.set_image(camera.img)  # display the result image
+                        gui.show()
+                        print(loss.item())
             break
+            # print('optim finished, press c to next step or other key to continue optimization.')
+            # if cv2.waitKey() == ord('c'):
+            #     break
 
 
-    betas0 = betas.clone()
-    expression0 = expression.clone()
-    pose0 = pose.clone()
-    trans0 = trans.clone()
+        betas0 = betas.clone()
+        expression0 = expression.clone()
+        pose0 = pose.clone()
+        trans0 = trans.clone()
+        g_o0 = g_o.clone()
+        print(verts)
 
-    obj2 = t3.readobj(os.path.join(smpl_dir, '205', 'smplx.obj'))
-    obj2['vi'][:, 0] *= -1
-    obj2['vi'][:, 2] *= -1
-    optim = torch.optim.Adam([trans, pose, betas, expression], lr=1e-2)
-    for i in range(200):
-        output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
+        obj2 = t3.readobj(os.path.join(dataroot, '%d.obj' % (subject+T)))
+        print(subject+T)
+        obj2['vi'][:, 0] *= -1
+        obj2['vi'][:, 2] *= -1
+        optim = torch.optim.Adam([trans, g_o, pose, betas, expression], lr=1e-2)
+
+        gt_v = torch.FloatTensor(obj2['vi']).unsqueeze(0).to(device)
+        for i in range(200):
+            output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
+                           return_verts=True)
+            verts = output.vertices
+            # print(verts)
+            loss = torch.nn.functional.mse_loss(verts, gt_v)
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
+            if i % 30 == 0:
+                vs = verts.detach().cpu().numpy().squeeze()
+                vs[:, 0] = -vs[:, 0]
+                vs[:, 2] = -vs[:, 2]
+                t3_m.vi.from_numpy(vs)
+                scene.render()  # render the model(s) into image
+                gui.set_image(camera.img)  # display the result image
+                gui.show()
+                print(loss.item())
+
+        output = model(betas=betas0, expression=expression0, body_pose=pose0, transl=trans0, global_orient=g_o0,
                        return_verts=True)
-        verts = output.vertices
-        gt_v = torch.FloatTensor(obj2['vi']).unsqueeze(0)
-        loss = torch.nn.functional.mse_loss(verts, gt_v)
-        optim.zero_grad()
-        loss.backward()
-        optim.step()
-        if i % 30 == 0:
-            vs = verts.detach().numpy().squeeze()
-            vs[:, 0] = -vs[:, 0]
-            vs[:, 2] = -vs[:, 2]
-            t3_m.vi.from_numpy(vs)
-            scene.render()  # render the model(s) into image
-            gui.set_image(camera.img)  # display the result image
-            gui.show()
-            print(loss.item())
+        vertices = output.vertices.detach().cpu().numpy().squeeze()
+        joints = output.joints.detach().cpu().numpy().squeeze()
 
-    output = model(betas=betas0, expression=expression0, body_pose=pose0, transl=trans0,
-                   return_verts=True)
-    vertices = output.vertices.detach().cpu().numpy().squeeze()
-    joints = output.joints.detach().cpu().numpy().squeeze()
+        obj = t3.readobj(os.path.join(dataroot, 'inference_eval_%d_0.obj' % subject))
+        # obj = t3.readobj(os.path.join(smpl_dir, subjects[0], 'smplx_new.obj'))
+        m_verts = obj['vi'][:, :3]
+        m_verts[:, 0] *= -1
+        m_verts[:, 2] *= -1
+        flann = FLANN()
+        result, dists = flann.nn(vertices, m_verts, 1)
+        result = torch.LongTensor(result)
+        print(result)
+        lbs_weights = model.lbs_weights
+        A = model(betas=betas0, expression=expression0, body_pose=pose0, transl=trans0, global_orient=g_o0, return_weight=True).vertices
+        A_inv = torch.inverse(A.reshape(-1, 4, 4))
+        obj_lbs_weights = lbs_weights[result[:], :]
+        m_verts = torch.FloatTensor(m_verts).unsqueeze(0)
+        m_verts -= trans0.reshape(1, 1, 3).detach().cpu()
+        verts = skinning(obj_lbs_weights, A_inv, m_verts)
 
-    obj = t3.readobj('dataset/result_200.obj')
-    # obj = t3.readobj(os.path.join(smpl_dir, subjects[0], 'smplx_new.obj'))
-    m_verts = obj['vi'][:, :3]
-    m_verts[:, 0] *= -1
-    m_verts[:, 2] *= -1
-    flann = FLANN()
-    result, dists = flann.nn(vertices, m_verts, 1)
-    result = torch.LongTensor(result)
-    print(result)
-    lbs_weights = model.lbs_weights
-    A = model(betas=betas0, expression=expression0, body_pose=pose0, transl=trans0, return_weight=True).vertices
-    A_inv = torch.inverse(A.reshape(-1, 4, 4))
-    obj_lbs_weights = lbs_weights[result[:], :]
-    m_verts = torch.FloatTensor(m_verts).unsqueeze(0)
-    m_verts -= trans0.reshape(1, 1, 3)
-    verts = skinning(obj_lbs_weights, A_inv, m_verts)
-
-    A2 = model(betas=betas, expression=expression, body_pose=pose, transl=trans, return_weight=True).vertices
-    verts = skinning(obj_lbs_weights, A2, verts)
-    verts += trans.reshape(1, 1, 3)
-    print(verts)
-    print(verts.shape)
-    verts = verts.detach().cpu().numpy().squeeze()
-    f = open('test.obj', 'w')
-    for i in range(verts.shape[0]):
-        f.write('v %f %f %f\n' % (-verts[i, 0], verts[i, 1], -verts[i, 2]))
-    for i in range(obj['f'].shape[0]):
-        f.write('f %d %d %d\n' % (obj['f'][i, 0, 0] + 1, obj['f'][i, 1, 0] + 1, obj['f'][i, 2, 0] + 1))
-
-    exit(0)
-
-
-
-
-
+        A2 = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o, return_weight=True).vertices
+        verts = skinning(obj_lbs_weights, A2, verts)
+        verts += trans.reshape(1, 1, 3).detach().cpu()
+        print(verts)
+        print(verts.shape)
+        verts = verts.detach().cpu().numpy().squeeze()
+        f = open(os.path.join(dataroot, 'inference_eval_%d_%d.obj' % (subject+T, T)), 'w')
+        for i in range(verts.shape[0]):
+            f.write('v %f %f %f\n' % (-verts[i, 0], verts[i, 1], -verts[i, 2]))
+        for i in range(obj['f'].shape[0]):
+            f.write('f %d %d %d\n' % (obj['f'][i, 0, 0] + 1, obj['f'][i, 1, 0] + 1, obj['f'][i, 2, 0] + 1))
+        # exit(0)
 
 
 if __name__ == '__main__':
