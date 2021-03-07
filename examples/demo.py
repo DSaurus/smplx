@@ -175,6 +175,10 @@ def main(model_folder,
     cv2.imshow('view_0', np.zeros((512, 512, 3)))
 
     for subject in subjects:
+        obj = t3.readobj(os.path.join(smpl_dir, subject, 'smplx.obj'))
+        obj['vi'][:, 0] = -obj['vi'][:, 0]
+        obj['vi'][:, 2] = -obj['vi'][:, 2]
+        t3_m.vi.from_numpy(obj['vi'])
         while 1:
             if not is_init:
                 optim = torch.optim.Adam([trans], lr=1e-1)
