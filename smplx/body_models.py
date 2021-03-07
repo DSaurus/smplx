@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 
 from .lbs import (
-    lbs, vertices2landmarks, find_dynamic_lmk_idx_and_bcoords)
+    lbs, lbs_weight, vertices2landmarks, find_dynamic_lmk_idx_and_bcoords)
 
 from .vertex_ids import vertex_ids as VERTEX_IDS
 from .utils import (
@@ -1099,6 +1099,7 @@ class SMPLX(SMPLH):
         return_verts: bool = True,
         return_full_pose: bool = False,
         pose2rot: bool = True,
+        return_weight: bool = False,
         **kwargs
     ) -> SMPLXOutput:
         '''
@@ -1199,6 +1200,12 @@ class SMPLX(SMPLH):
 
         shapedirs = torch.cat([self.shapedirs, self.expr_dirs], dim=-1)
 
+        if return_weight:
+            A = lbs_weight(shape_components, full_pose, self.v_template,
+                           shapedirs, self.posedirs,
+                           self.J_regressor, self.parents,
+                           self.lbs_weights, pose2rot=pose2rot)
+            return SMPLXOutput(vertices=A)
         vertices, joints = lbs(shape_components, full_pose, self.v_template,
                                shapedirs, self.posedirs,
                                self.J_regressor, self.parents,
@@ -1381,7 +1388,6 @@ class SMPLXLayer(SMPLX):
                                 dtype=dtype, device=device)
         if transl is None:
             transl = torch.zeros([batch_size, 3], dtype=dtype, device=device)
-
         # Concatenate all pose vectors
         full_pose = torch.cat(
             [global_orient.reshape(-1, 1, 3, 3),

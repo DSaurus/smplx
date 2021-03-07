@@ -120,12 +120,8 @@ def main(model_folder,
          model_type, dataroot, yaw_list,
          ext='npz',
          gender='neutral',
-         plot_joints=False,
          num_betas=10,
-         sample_shape=True,
-         sample_expression=True,
          num_expression_coeffs=10,
-         plotting_module='pyrender',
          use_face_contour=False):
     import os
     import sys
@@ -142,6 +138,9 @@ def main(model_folder,
     pose = torch.zeros((1, model.NUM_BODY_JOINTS * 3))
     pose.requires_grad = True
 
+    # print(model.lbs_weights.shape)
+    # print(model(betas=betas, expression=expression, body_pose=pose, transl=trans, return_weight=True).vertices.shape)
+    # exit(0)
     smpl_dir = os.path.join(dataroot, 'smplx')
     img_dir = os.path.join(dataroot, 'img')
     par_dir = os.path.join(dataroot, 'parameter')
@@ -378,46 +377,15 @@ if __name__ == '__main__':
     parser.add_argument('--num-expression-coeffs', default=10, type=int,
                         dest='num_expression_coeffs',
                         help='Number of expression coefficients.')
-    parser.add_argument('--plotting-module', type=str, default='pyrender',
-                        dest='plotting_module',
-                        choices=['pyrender', 'matplotlib', 'open3d'],
-                        help='The module to use for plotting the result')
-    parser.add_argument('--ext', type=str, default='npz',
-                        help='Which extension to use for loading')
-    parser.add_argument('--plot-joints', default=False,
-                        type=lambda arg: arg.lower() in ['true', '1'],
-                        help='The path to the model folder')
-    parser.add_argument('--sample-shape', default=True,
-                        dest='sample_shape',
-                        type=lambda arg: arg.lower() in ['true', '1'],
-                        help='Sample a random shape')
-    parser.add_argument('--sample-expression', default=True,
-                        dest='sample_expression',
-                        type=lambda arg: arg.lower() in ['true', '1'],
-                        help='Sample a random expression')
-    parser.add_argument('--use-face-contour', default=False,
-                        type=lambda arg: arg.lower() in ['true', '1'],
-                        help='Compute the contour of the face')
-
     args = parser.parse_args()
 
     model_folder = osp.expanduser(osp.expandvars(args.model_folder))
     model_type = args.model_type
-    plot_joints = args.plot_joints
-    use_face_contour = args.use_face_contour
     gender = args.gender
-    ext = args.ext
-    plotting_module = args.plotting_module
     num_betas = args.num_betas
     num_expression_coeffs = args.num_expression_coeffs
-    sample_shape = args.sample_shape
-    sample_expression = args.sample_expression
 
-    main(model_folder, model_type, args.dataroot, args.yaw_list, ext=ext,
-         gender=gender, plot_joints=plot_joints,
+    main(model_folder, model_type, args.dataroot, args.yaw_list,
+         gender=gender,
          num_betas=num_betas,
-         num_expression_coeffs=num_expression_coeffs,
-         sample_shape=sample_shape,
-         sample_expression=sample_expression,
-         plotting_module=plotting_module,
-         use_face_contour=use_face_contour)
+         num_expression_coeffs=num_expression_coeffs)

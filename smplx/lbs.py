@@ -148,6 +148,56 @@ def vertices2landmarks(
     landmarks = torch.einsum('blfi,blf->bli', [lmk_vertices, lmk_bary_coords])
     return landmarks
 
+def lbs_weight(
+    betas: Tensor,
+    pose: Tensor,
+    v_template: Tensor,
+    shapedirs: Tensor,
+    posedirs: Tensor,
+    J_regressor: Tensor,
+    parents: Tensor,
+    lbs_weights: Tensor,
+    pose2rot: bool = True,
+) -> Tuple[Tensor, Tensor]:
+
+    batch_size = max(betas.shape[0], pose.shape[0])
+    device, dtype = betas.device, betas.dtype
+
+    # Add shape contribution
+    v_shaped = v_template + blend_shapes(betas, shapedirs)
+
+    # Get the joints
+    # NxJx3 array
+    J = vertices2joints(J_regressor, v_shaped)
+
+    # 3. Add pose blend shapes
+    # N x J x 3 x 3
+    ident = torch.eye(3, dtype=dtype, device=device)
+    if pose2rot:
+        rot_mats = batch_rodrigues(pose.view(-1, 3)).view(
+            [batch_size, -1, 3, 3])
+    else:
+        rot_mats = pose.view(batch_size, -1, 3, 3)
+
+    # 4. Get the global joint location
+    J_transformed, A = batch_rigid_transform(rot_mats, J, parents, dtype=dtype)
+
+    # 5. Do skinning:
+    # W is N x V x (J + 1)
+    # W = lbs_weights.unsqueeze(dim=0).expand([batch_size, -1, -1])
+    # (N x V x (J + 1)) x (N x (J + 1) x 16)
+    # num_joints = J_regressor.shape[0]
+    # T = torch.matmul(W, A.view(batch_size, num_joints, 16)) \
+    #     .view(batch_size, -1, 4, 4)
+
+    # homogen_coord = torch.ones([batch_size, v_posed.shape[1], 1],
+    #                            dtype=dtype, device=device)
+    # v_posed_homo = torch.cat([v_posed, homogen_coord], dim=2)
+    # v_homo = torch.matmul(T, torch.unsqueeze(v_posed_homo, dim=-1))
+    #
+    # verts = v_homo[:, :, :3, 0]
+
+    return A
 
 def lbs(
     betas: Tensor,
