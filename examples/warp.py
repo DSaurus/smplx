@@ -193,7 +193,6 @@ def main(model_folder,
         pose0 = pose.clone()
         trans0 = trans.clone()
         g_o0 = g_o.clone()
-        print(verts)
 
         obj2 = t3.readobj(os.path.join(dataroot, '%d.obj' % (subject+T)))
         print(subject+T)
@@ -232,13 +231,17 @@ def main(model_folder,
         m_verts[:, 0] *= -1
         m_verts[:, 2] *= -1
         flann = FLANN()
-        result, dists = flann.nn(vertices, m_verts, 1)
+        result, dists = flann.nn(vertices, m_verts, 4)
         result = torch.LongTensor(result)
+        obj_lbs_weights = torch.cat([model.lbs_weights[result[:, i], :].unsqueeze(0) for i in range(4)], 0)
+        obj_lbs_weights = obj_lbs_weights.permute(1, 2, 0).detach().cpu()
+        dists = torch.FloatTensor(1.0 / (dists ** 2 + 1e-6))
+        obj_lbs_weights = obj_lbs_weights * dists.unsqueeze(1) / torch.sum(dists, dim=1).reshape(-1, 1, 1)
+        obj_lbs_weights = torch.sum(obj_lbs_weights, dim=2)
         print(result)
         lbs_weights = model.lbs_weights
         A = model(betas=betas0, expression=expression0, body_pose=pose0, transl=trans0, global_orient=g_o0, return_weight=True).vertices
         A_inv = torch.inverse(A.reshape(-1, 4, 4))
-        obj_lbs_weights = lbs_weights[result[:], :]
         m_verts = torch.FloatTensor(m_verts).unsqueeze(0)
         m_verts -= trans0.reshape(1, 1, 3).detach().cpu()
         verts = skinning(obj_lbs_weights, A_inv, m_verts)
