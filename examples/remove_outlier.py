@@ -4,7 +4,7 @@ import numpy as np
 import queue
 import sys
 
-for subject in range(202, 260-2):
+for subject in tqdm(range(202, 260-2)):
     obj = t3.readobj('fusion/single_test/fused_%d.obj' % subject)
     edges = {}
     visit = np.zeros(obj['vi'].shape[0])
