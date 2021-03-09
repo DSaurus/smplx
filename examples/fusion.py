@@ -1,105 +1,13 @@
 import numpy as np
 import trimesh
-
-def create_grid(resX, resY, resZ, b_min=np.array([0, 0, 0]), b_max=np.array([1, 1, 1]), transform=None):
-    '''
-    Create a dense grid of given resolution and bounding box
-    :param resX: resolution along X axis
-    :param resY: resolution along Y axis
-    :param resZ: resolution along Z axis
-    :param b_min: vec3 (x_min, y_min, z_min) bounding box corner
-    :param b_max: vec3 (x_max, y_max, z_max) bounding box corner
-    :return: [3, resX, resY, resZ] coordinates of the grid, and transform matrix from mesh index
-    '''
-    # print('start creating grid')
-    coords = np.mgrid[:resX, :resY, :resZ]
-    coords = coords.reshape(3, -1)
-    coords_matrix = np.eye(4)
-    length = b_max - b_min
-    coords_matrix[0, 0] = length[0] / resX
-    coords_matrix[1, 1] = length[1] / resY
-    coords_matrix[2, 2] = length[2] / resZ
-    coords_matrix[0:3, 3] = b_min
-    coords = np.matmul(coords_matrix[:3, :3], coords) + coords_matrix[:3, 3:4]
-    if transform is not None:
-        coords = np.matmul(transform[:3, :3], coords) + transform[:3, 3:4]
-        coords_matrix = np.matmul(transform, coords_matrix)
-    coords = coords.reshape(3, resX, resY, resZ)
-    # print('creating_grid_done')
-    return coords, coords_matrix
-
-
-def batch_eval(points, eval_func, num_samples=512 * 512 * 512):
-    num_pts = points.shape[1]
-    sdf = np.zeros(num_pts)
-
-    num_batches = num_pts // num_samples
-    for i in range(num_batches):
-        sdf[i * num_samples:i * num_samples + num_samples] = eval_func(
-            points[:, i * num_samples:i * num_samples + num_samples])
-    if num_pts % num_samples:
-        sdf[num_batches * num_samples:] = eval_func(points[:, num_batches * num_samples:])
-
-    return sdf
-
-
-def eval_grid(coords, eval_func, num_samples=512 * 512 * 512):
-    resolution = coords.shape[1:4]
-    coords = coords.reshape([3, -1])
-    sdf = batch_eval(coords, eval_func, num_samples=num_samples)
-    return sdf.reshape(resolution)
-
-
-def eval_grid_octree(coords, eval_func,
-                     init_resolution=64, threshold=0.01,
-                     num_samples=512 * 512 * 512):
-    resolution = coords.shape[1:4]
-
-    sdf = np.zeros(resolution)
-
-    dirty = np.ones(resolution, dtype=np.bool)
-    grid_mask = np.zeros(resolution, dtype=np.bool)
-
-    reso = resolution[0] // init_resolution
-
-    while reso > 0:
-        # subdivide the grid
-        grid_mask[0:resolution[0]:reso, 0:resolution[1]:reso, 0:resolution[2]:reso] = True
-        # test samples in this iteration
-        test_mask = np.logical_and(grid_mask, dirty)
-        #print('step size:', reso, 'test sample size:', test_mask.sum())
-        points = coords[:, test_mask]
-
-        sdf[test_mask] = batch_eval(points, eval_func, num_samples=num_samples)
-        dirty[test_mask] = False
-
-        # do interpolation
-        if reso <= 1:
-            break
-        for x in range(0, resolution[0] - reso, reso):
-            for y in range(0, resolution[1] - reso, reso):
-                for z in range(0, resolution[2] - reso, reso):
-                    # if center marked, return
-                    if not dirty[x + reso // 2, y + reso // 2, z + reso // 2]:
-                        continue
-                    v0 = sdf[x, y, z]
-                    v1 = sdf[x, y, z + reso]
-                    v2 = sdf[x, y + reso, z]
-                    v3 = sdf[x, y + reso, z + reso]
-                    v4 = sdf[x + reso, y, z]
-                    v5 = sdf[x + reso, y, z + reso]
-                    v6 = sdf[x + reso, y + reso, z]
-                    v7 = sdf[x + reso, y + reso, z + reso]
-                    v = np.array([v0, v1, v2, v3, v4, v5, v6, v7])
-                    v_min = v.min()
-                    v_max = v.max()
-                    # this cell is all the same
-                    if (v_max - v_min) < threshold:
-                        sdf[x:x + reso, y:y + reso, z:z + reso] = (v_max + v_min) / 2
-                        dirty[x:x + reso, y:y + reso, z:z + reso] = False
-        reso //= 2
-
-    return sdf.reshape(resolution)
+import taichi_three as t3
+import taichi as ti
+import matplotlib.pyplot as plt
+import math
+from pypoisson import poisson_reconstruction
+from tqdm import tqdm
+import argparse
+import os
 
 
 def save_obj_mesh(mesh_path, verts, faces):
@@ -113,20 +21,17 @@ def save_obj_mesh(mesh_path, verts, faces):
     file.close()
 
 if __name__ == '__main__':
-    from skimage import measure
-    from mesh_to_sdf import mesh_to_voxels
-    import taichi_three as t3
-    import taichi as ti
-    import matplotlib.pyplot as plt
-    import math
-    from pypoisson import poisson_reconstruction
-    from tqdm import tqdm
-    for subject in tqdm(range(202, 260-2)):
+    parser = argparse.ArgumentParser(description='SMPL-X Demo')
+    parser.add_argument('--dataroot', type=str)
+    parser.add_argument('--result', type=str)
+    args = parser.parse_args()
+    os.makedirs(args.result, exist_ok=True)
+    for subject in tqdm(range(202, 1199)):
         ti.init(ti.cpu)
         scene = t3.Scene()
         light = t3.Light()
         scene.add_light(light)
-        mesh0 = t3.readobj('fusion/single_test/inference_eval_%d_0.obj' % subject)
+        mesh0 = t3.readobj(os.path.join(args.dataroot, 'inference_eval_%d_0.obj' % subject))
         mesh0['vi'] = mesh0['vi'][:, :3]
         b_max = np.max(mesh0['vi'], axis=0).reshape((-1, 3))
         b_min = np.min(mesh0['vi'], axis=0).reshape((-1, 3))
@@ -137,9 +42,12 @@ if __name__ == '__main__':
         scene.add_camera(camera)
 
         r = 2
-        c_depth_list = []
-        c_pos_list = []
-        c_nms_list = []
+        c_depth_list = {}
+        c_pos_list = {}
+        c_nms_list = {}
+        c_depth_list[0] = []
+        c_pos_list[0] = []
+        c_nms_list[0] = []
         for angle in range(0, 360, 45):
             ang = angle / 180 * math.acos(-1)
             camera.set(pos=[r*math.cos(ang), 0, r*math.sin(ang)], target=[0, 0, 0])
@@ -150,80 +58,62 @@ if __name__ == '__main__':
             normal = camera.normal.to_numpy()
             pos_map = camera.pos_map.to_numpy()
             depth = camera.zbuf.to_numpy()
-            c_depth_list.append(depth)
-            c_pos_list.append(pos_map)
-            c_nms_list.append(normal)
+            c_depth_list[0].append(depth)
+            c_pos_list[0].append(pos_map)
+            c_nms_list[0].append(normal)
 
-        ti.init(ti.cpu)
-        scene = t3.Scene()
-        light = t3.Light()
-        scene.add_light(light)
-        mesh1 = t3.readobj('fusion/single_test/inference_eval_%d_1.obj' % subject)
-        mesh1['vi'] = mesh1['vi'][:, :3]
-        mesh1['vi'] -= (b_max + b_min) / 2
-        model = t3.Model(obj=mesh1)
-        scene.add_model(model)
-        camera = t3.Camera((512, 512))
-        scene.add_camera(camera)
-        r = 2
-        for angle in range(0, 360, 45):
-            ang = angle / 180 * math.acos(-1)
-            camera.set(pos=[r * math.cos(ang), 0, r * math.sin(ang)], target=[0, 0, 0])
-            camera._init()
-            scene.render()
-            normal = camera.normal.to_numpy()
-            pos_map = camera.pos_map.to_numpy()
-            depth = camera.zbuf.to_numpy()
-            c_depth_list.append(depth)
-            c_pos_list.append(pos_map)
-            c_nms_list.append(normal)
+        fuse_list = [-1, 1]
+        for id in fuse_list:
+            c_depth_list[id] = []
+            c_pos_list[id] = []
+            c_nms_list[id] = []
+            ti.init(ti.cpu)
+            scene = t3.Scene()
+            light = t3.Light()
+            scene.add_light(light)
+            mesh = t3.readobj(os.path.join(args.dataroot, 'inference_eval_%d_%d.obj' % (subject, id)))
+            mesh['vi'] = mesh['vi'][:, :3]
+            mesh['vi'] -= (b_max + b_min) / 2
+            model = t3.Model(obj=mesh)
+            scene.add_model(model)
+            camera = t3.Camera((512, 512))
+            scene.add_camera(camera)
+            r = 2
+            for angle in range(0, 360, 45):
+                ang = angle / 180 * math.acos(-1)
+                camera.set(pos=[r * math.cos(ang), 0, r * math.sin(ang)], target=[0, 0, 0])
+                camera._init()
+                scene.render()
+                normal = camera.normal.to_numpy()
+                pos_map = camera.pos_map.to_numpy()
+                depth = camera.zbuf.to_numpy()
+                c_depth_list[id].append(depth)
+                c_pos_list[id].append(pos_map)
+                c_nms_list[id].append(normal)
 
-        ti.init(ti.cpu)
-        scene = t3.Scene()
-        light = t3.Light()
-        scene.add_light(light)
-        mesh2 = t3.readobj('fusion/single_test/inference_eval_%d_2.obj' % subject)
-        mesh2['vi'] = mesh2['vi'][:, :3]
-        mesh2['vi'] -= (b_max + b_min) / 2
-        model = t3.Model(obj=mesh2)
-        scene.add_model(model)
-        camera = t3.Camera((512, 512))
-        scene.add_camera(camera)
-        r = 2
-        for angle in range(0, 360, 45):
-            ang = angle / 180 * math.acos(-1)
-            camera.set(pos=[r * math.cos(ang), 0, r * math.sin(ang)], target=[0, 0, 0])
-            camera._init()
-            scene.render()
-            normal = camera.normal.to_numpy()
-            pos_map = camera.pos_map.to_numpy()
-            depth = camera.zbuf.to_numpy()
-            c_depth_list.append(depth)
-            c_pos_list.append(pos_map)
-            c_nms_list.append(normal)
 
         pts_list = []
         nms_list = []
         print(len(c_depth_list))
         for i in range(8):
-            ind1 = np.logical_and(c_depth_list[i] > 0,
-                        np.logical_or(np.abs(c_depth_list[i] - c_depth_list[i+8]) < 0.01, np.abs(c_depth_list[i] - c_depth_list[i+16]) < 0.01))
-            ind2 = np.logical_and(c_depth_list[i+8] > 0,
-                        np.logical_or(np.abs(c_depth_list[i] - c_depth_list[i+8]) < 0.01, np.abs(c_depth_list[i+8] - c_depth_list[i+16]) < 0.01))
-            ind3 = np.logical_and(c_depth_list[i+16] > 0,
-                        np.logical_or(np.abs(c_depth_list[i+16] - c_depth_list[i+8]) < 0.01, np.abs(c_depth_list[i] - c_depth_list[i+16]) < 0.01))
+            ind1 = np.logical_and(c_depth_list[0][i] > 0,
+                        np.logical_or(np.abs(c_depth_list[0][i] - c_depth_list[-1][i]) < 0.01, np.abs(c_depth_list[0][i] - c_depth_list[1][i]) < 0.01))
+            ind2 = np.logical_and(c_depth_list[-1][i] > 0,
+                        np.logical_or(np.abs(c_depth_list[-1][i] - c_depth_list[0][i]) < 0.01, np.abs(c_depth_list[-1][i] - c_depth_list[1][i]) < 0.01))
+            ind3 = np.logical_and(c_depth_list[1][i] > 0,
+                        np.logical_or(np.abs(c_depth_list[1][i] - c_depth_list[0][i]) < 0.01, np.abs(c_depth_list[1][i] - c_depth_list[-1][i]) < 0.01))
             ind_cnt = (ind1.astype(int)+ind2.astype(int)+ind3.astype(int))
             ind = (ind1.astype(int)+ind2.astype(int)+ind3.astype(int)) >= 2
             print(np.sum(ind1), np.sum(ind2), np.sum(ind3))
             print(np.max(ind1+ind2+ind3))
 
-            pos_map1 = c_pos_list[i]
-            pos_map2 = c_pos_list[i+8]
-            pos_map3 = c_pos_list[i+16]
+            pos_map1 = c_pos_list[0][i]
+            pos_map2 = c_pos_list[-1][i]
+            pos_map3 = c_pos_list[1][i]
 
-            normal1 = c_nms_list[i]
-            normal2 = c_nms_list[i+8]
-            normal3 = c_nms_list[i+16]
+            normal1 = c_nms_list[0][i]
+            normal2 = c_nms_list[-1][i]
+            normal3 = c_nms_list[1][i]
 
             pos_map1[ind != ind1, :] = 0
             pos_map2[ind != ind2, :] = 0
@@ -251,9 +141,9 @@ if __name__ == '__main__':
         # nms_list.append(nms)
         points = np.concatenate(pts_list, 0)
         normals = np.concatenate(nms_list, 0)
-        faces, vertices = poisson_reconstruction(points, normals, depth=8)
+        faces, vertices = poisson_reconstruction(points, normals, depth=9)
         vertices += (b_max + b_min) / 2
-        save_obj_mesh('fusion/single_test/fused_%d.obj' % subject, vertices, faces)
+        save_obj_mesh(os.path.join(args.result, 'fused_%d.obj' % subject), vertices, faces)
         # mesh0 = trimesh.load('fusion/single_test/inference_eval_%d_0.obj' % subject)
         # mesh1 = trimesh.load('fusion/single_test/inference_eval_%d_1.obj' % subject)
         # mesh2 = trimesh.load('fusion/single_test/inference_eval_%d_2.obj' % subject)
