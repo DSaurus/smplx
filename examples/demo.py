@@ -27,7 +27,8 @@ import taichi as ti
 import cv2
 import torch.nn.functional as F
 
-
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"]="True"
 class View:
     def __init__(self, img, vid, joints_2d):
         self.img = img
@@ -122,7 +123,8 @@ def main(model_folder,
          gender='neutral',
          num_betas=10,
          num_expression_coeffs=10,
-         use_face_contour=False):
+         use_face_contour=False,
+         data_list=None):
     import os
     import sys
 
@@ -137,14 +139,17 @@ def main(model_folder,
     trans = torch.randn([1, 3], requires_grad=True)
     pose = torch.zeros((1, model.NUM_BODY_JOINTS * 3))
     pose.requires_grad = True
+    g_o = torch.zeros((1, 3))
+    g_o.requires_grad = True
 
     # print(model.lbs_weights.shape)
     # print(model(betas=betas, expression=expression, body_pose=pose, transl=trans, return_weight=True).vertices.shape)
     # exit(0)
     smpl_dir = os.path.join(dataroot, 'smplx')
     img_dir = os.path.join(dataroot, 'img')
+    mask_dir = os.path.join(dataroot, 'mask')
     par_dir = os.path.join(dataroot, 'parameter')
-    subjects = os.listdir(os.path.join(smpl_dir))
+    subjects = os.listdir(os.path.join(smpl_dir)) if data_list is None else data_list
     is_init = False
 
     ti.init(ti.cpu)
@@ -159,9 +164,10 @@ def main(model_folder,
     scene.add_light(light)
     light2 = t3.Light([0, 0, -1])
     scene.add_light(light2)
-    intrinsic = np.load(os.path.join(par_dir, subjects[0], '%d_intrinsic.npy' % yaw_list[0]))
-    extrinsic = np.load(os.path.join(par_dir, subjects[0], '%d_extrinsic.npy' % yaw_list[0]))
-    camera.set_intrinsic(intrinsic[0, 0], -intrinsic[1, 1], intrinsic[0, 2], 512 - intrinsic[1, 2])
+    intrinsic = np.load(os.path.join(par_dir, subjects[0], '%d_intrinsic.npy' % yaw_list[3]))
+    extrinsic = np.load(os.path.join(par_dir, subjects[0], '%d_extrinsic.npy' % yaw_list[3]))
+    # camera.set_intrinsic(intrinsic[0, 0], -intrinsic[1, 1], intrinsic[0, 2], 512 - intrinsic[1, 2])
+    camera.set_intrinsic(intrinsic[0, 0], intrinsic[1, 1], intrinsic[0, 2], intrinsic[1, 2])
     pos = -extrinsic[:3, :3].T @ extrinsic[:3, 3]
     tr = extrinsic[:3, :3].T
     camera.pos_py = [pos[i] for i in range(3)]
@@ -175,15 +181,20 @@ def main(model_folder,
     cv2.imshow('view_0', np.zeros((512, 512, 3)))
 
     for subject in subjects:
+        # if subject != '402':
+        #         #     continue
+        print(subject)
+        if not os.path.exists(os.path.join(smpl_dir, subject, 'smplx.obj')):
+            continue
         obj = t3.readobj(os.path.join(smpl_dir, subject, 'smplx.obj'))
         obj['vi'][:, 0] = -obj['vi'][:, 0]
         obj['vi'][:, 2] = -obj['vi'][:, 2]
         t3_m.vi.from_numpy(obj['vi'])
         while 1:
             if not is_init:
-                optim = torch.optim.Adam([trans], lr=1e-1)
+                optim = torch.optim.Adam([trans, g_o], lr=1e-1)
                 for i in range(300):
-                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
+                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
                                    return_verts=True)
                     verts = output.vertices
                     gt_v = torch.FloatTensor(obj['vi']).unsqueeze(0)
@@ -191,7 +202,7 @@ def main(model_folder,
                     optim.zero_grad()
                     loss.backward()
                     optim.step()
-                    print(loss.item())
+                    print(subject, loss.item())
                     if i % 100 == 0:
                         vs = verts.detach().numpy().squeeze()
                         vs[:, 0] = -vs[:, 0]
@@ -200,9 +211,9 @@ def main(model_folder,
                         scene.render()  # render the model(s) into image
                         gui.set_image(camera.img)  # display the result image
                         gui.show()
-                optim = torch.optim.Adam([trans, pose], lr=1e-2)
+                optim = torch.optim.Adam([trans, g_o, pose], lr=1e-2)
                 for i in range(300):
-                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
+                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
                                    return_verts=True)
                     verts = output.vertices
                     gt_v = torch.FloatTensor(obj['vi']).unsqueeze(0)
@@ -220,9 +231,9 @@ def main(model_folder,
                         scene.render()  # render the model(s) into image
                         gui.set_image(camera.img)  # display the result image
                         gui.show()
-                optim = torch.optim.Adam([trans, pose, betas, expression], lr=1e-2)
+                optim = torch.optim.Adam([trans, pose, g_o, betas, expression], lr=1e-2)
                 for i in range(1000):
-                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
+                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
                                    return_verts=True)
                     verts = output.vertices
                     gt_v = torch.FloatTensor(obj['vi']).unsqueeze(0)
@@ -238,12 +249,12 @@ def main(model_folder,
                         scene.render()  # render the model(s) into image
                         gui.set_image(camera.img)  # display the result image
                         gui.show()
-                        print(loss.item())
-                is_init = True
+                        print(subject, loss.item())
+                # is_init = True
             else:
-                optim = torch.optim.Adam([trans, pose, betas, expression], lr=1e-2)
+                optim = torch.optim.Adam([trans, pose, betas, g_o, expression], lr=1e-2)
                 for i in range(200):
-                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
+                    output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
                                    return_verts=True)
                     verts = output.vertices
                     gt_v = torch.FloatTensor(obj['vi']).unsqueeze(0)
@@ -264,7 +275,7 @@ def main(model_folder,
             if cv2.waitKey() == ord('c'):
                 break
 
-        output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
+        output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
                        return_verts=True)
         vertices = output.vertices.detach().cpu().numpy().squeeze()
         joints = output.joints.detach().cpu().numpy().squeeze()
@@ -276,14 +287,16 @@ def main(model_folder,
         ex_list = []
         in_list = []
         for vid in range(6):
-            intrinsic = np.load(os.path.join(par_dir, subject, '%d_intrinsic.npy') % vid)
-            extrinsic = np.load(os.path.join(par_dir, subject, '%d_extrinsic.npy') % vid)
+            intrinsic = np.load(os.path.join(par_dir, subject, '%d_intrinsic.npy') % yaw_list[vid])
+            extrinsic = np.load(os.path.join(par_dir, subject, '%d_extrinsic.npy') % yaw_list[vid])
+            intrinsic[1, 1] *= -1
+            intrinsic[1, 2] = 512 - intrinsic[1, 2]
             pts = extrinsic[:3, :3] @ joints.T
             pts += extrinsic[:3, 3:]
             pts = intrinsic @ pts
             pts[:2, :] /= pts[2:, :]
             pts = pts.T
-            view = View(cv2.imread(os.path.join(img_dir, subject, '%d.jpg' % vid)), vid, pts[:22, :2])
+            view = View(cv2.imread(os.path.join(img_dir, subject, '%d.jpg' % yaw_list[vid])), vid, pts[:22, :2])
             view.init()
             view.draw()
             view_list.append(view)
@@ -330,9 +343,9 @@ def main(model_folder,
         joints_3d.requires_grad = False
         joints_3d[:, 0] = -joints_3d[:, 0]
         joints_3d[:, 2] = -joints_3d[:, 2]
-        optim = torch.optim.Adam([trans, pose, betas, expression], lr=1e-2)
+        optim = torch.optim.Adam([trans, pose, betas, expression, g_o], lr=1e-2)
         for i in range(500):
-            output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
+            output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
                            return_verts=True)
             verts = output.vertices
             joints = output.joints
@@ -348,9 +361,9 @@ def main(model_folder,
                 scene.render()  # render the model(s) into image
                 gui.set_image(camera.img)  # display the result image
                 gui.show()
-                print(loss.item())
+                print(subject, loss.item())
 
-        output = model(betas=betas, expression=expression, body_pose=pose, transl=trans,
+        output = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
                        return_verts=True)
         vertices = output.vertices.detach().cpu().numpy().squeeze()
         f = open(os.path.join(smpl_dir, subject, 'smplx_new.obj'), 'w')
@@ -368,6 +381,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='SMPL-X Demo')
     parser.add_argument('--dataroot', type=str)
     parser.add_argument('--yaw_list', type=int, nargs='+')
+    parser.add_argument('--data_list', type=str, default=None)
     parser.add_argument('--model-folder', required=True, type=str,
                         help='The path to the model folder')
     parser.add_argument('--model-type', default='smplx', type=str,
@@ -388,8 +402,17 @@ if __name__ == '__main__':
     gender = args.gender
     num_betas = args.num_betas
     num_expression_coeffs = args.num_expression_coeffs
+    data_list = None
+    if args.data_list is not None:
+        data_list = []
+        with open(args.data_list, 'r') as f:
+            ls = f.readlines()
+            for l in ls:
+                data_list.append(l.strip('\n'))
+    print(data_list)
 
     main(model_folder, model_type, args.dataroot, args.yaw_list,
          gender=gender,
          num_betas=num_betas,
-         num_expression_coeffs=num_expression_coeffs)
+         num_expression_coeffs=num_expression_coeffs,
+         data_list=data_list)
