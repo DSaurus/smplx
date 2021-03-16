@@ -27,6 +27,7 @@ import taichi as ti
 import cv2
 import torch.nn.functional as F
 from pyflann import *
+from tqdm import tqdm
 
 def skinning(lbs, A, verts):
     # 5. Do skinning:
@@ -46,7 +47,7 @@ def skinning(lbs, A, verts):
     return v_homo[:, :, :3, 0]
 
 def main(model_folder,
-         model_type, dataroot,
+         model_type, dataroot, result_dir, T,
          ext='npz',
          gender='neutral',
          num_betas=10,
@@ -72,7 +73,7 @@ def main(model_folder,
     is_init = False
 
     ti.init(ti.cpu)
-    obj = t3.readobj(os.path.join(dataroot, '200.obj'))
+    obj = t3.readobj(os.path.join(dataroot, 'smplx', '250', 'smplx.obj'))
     obj['vi'][:, 0] = -obj['vi'][:, 0]
     obj['vi'][:, 2] = -obj['vi'][:, 2]
     # taichi show
@@ -98,9 +99,8 @@ def main(model_folder,
     cv2.namedWindow('view_0')
     cv2.imshow('view_0', np.zeros((512, 512, 3)))
 
-    T = 2
-    for subject in range(200, 260-T):
-        obj = t3.readobj(os.path.join(dataroot, '%d.obj' % subject))
+    for subject in tqdm(range(431, 730)):
+        obj = t3.readobj(os.path.join(dataroot, 'smplx', '%d' % (subject+T), 'smplx.obj'))
         obj['vi'][:, 0] = -obj['vi'][:, 0]
         obj['vi'][:, 2] = -obj['vi'][:, 2]
         while 1:
@@ -194,8 +194,8 @@ def main(model_folder,
         trans0 = trans.clone()
         g_o0 = g_o.clone()
 
-        obj2 = t3.readobj(os.path.join(dataroot, '%d.obj' % (subject+T)))
-        print(subject+T)
+        obj2 = t3.readobj(os.path.join(dataroot, 'smplx', '%d' % (subject), 'smplx.obj'))
+        print(subject)
         obj2['vi'][:, 0] *= -1
         obj2['vi'][:, 2] *= -1
         optim = torch.optim.Adam([trans, g_o, pose, betas, expression], lr=1e-2)
@@ -220,25 +220,29 @@ def main(model_folder,
                 gui.show()
                 print(loss.item())
 
-        output = model(betas=betas0, expression=expression0, body_pose=pose0, transl=trans0, global_orient=g_o0,
+        output = model(betas=betas0, expressiotan=expression0, body_pose=pose0, transl=trans0, global_orient=g_o0,
                        return_verts=True)
         vertices = output.vertices.detach().cpu().numpy().squeeze()
         joints = output.joints.detach().cpu().numpy().squeeze()
 
-        obj = t3.readobj(os.path.join(dataroot, 'inference_eval_%d_0.obj' % subject))
+        obj = t3.readobj(os.path.join(result_dir, 'inference_eval_%d_0.obj' % (subject+T)))
         # obj = t3.readobj(os.path.join(smpl_dir, subjects[0], 'smplx_new.obj'))
         m_verts = obj['vi'][:, :3]
         m_verts[:, 0] *= -1
         m_verts[:, 2] *= -1
+        origin_verts = m_verts.copy()
         flann = FLANN()
-        result, dists = flann.nn(vertices, m_verts, 4)
+        K = 4
+        result, dists = flann.nn(vertices, m_verts, K)
         result = torch.LongTensor(result)
-        obj_lbs_weights = torch.cat([model.lbs_weights[result[:, i], :].unsqueeze(0) for i in range(4)], 0)
+        obj_lbs_weights = torch.cat([model.lbs_weights[result[:, i], :].unsqueeze(0) for i in range(K)], 0)
         obj_lbs_weights = obj_lbs_weights.permute(1, 2, 0).detach().cpu()
-        dists = torch.FloatTensor(1.0 / (dists ** 2 + 1e-6))
+        dists = torch.FloatTensor(dists)
+        sigma = 0.05
+        dists = torch.exp(-dists / sigma**2)
         obj_lbs_weights = obj_lbs_weights * dists.unsqueeze(1) / torch.sum(dists, dim=1).reshape(-1, 1, 1)
         obj_lbs_weights = torch.sum(obj_lbs_weights, dim=2)
-        print(result)
+        # print(result)
         lbs_weights = model.lbs_weights
         A = model(betas=betas0, expression=expression0, body_pose=pose0, transl=trans0, global_orient=g_o0, return_weight=True).vertices
         A_inv = torch.inverse(A.reshape(-1, 4, 4))
@@ -249,13 +253,19 @@ def main(model_folder,
         A2 = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o, return_weight=True).vertices
         verts = skinning(obj_lbs_weights, A2, verts)
         verts += trans.reshape(1, 1, 3).detach().cpu()
-        print(verts)
-        print(verts.shape)
+        # print(verts)
+        # print(verts.shape)
         verts = verts.detach().cpu().numpy().squeeze()
-        f = open(os.path.join(dataroot, 'inference_eval_%d_%d.obj' % (subject+T, T)), 'w')
+        distance = np.sqrt(np.sum((verts - origin_verts)**2, axis=1))
+        # print(distance)
+        # print(np.sum(distance > 0.03))
+        distance[distance > 0.06] = 1e3
+        f = open(os.path.join(result_dir, 'inference_eval_%d_%d.obj' % (subject, T)), 'w')
         for i in range(verts.shape[0]):
             f.write('v %f %f %f\n' % (-verts[i, 0], verts[i, 1], -verts[i, 2]))
         for i in range(obj['f'].shape[0]):
+            if distance[obj['f'][i, 0, 0]] > 1 or distance[obj['f'][i, 1, 0]] > 1 or distance[obj['f'][i, 2, 0]] > 1:
+                continue
             f.write('f %d %d %d\n' % (obj['f'][i, 0, 0] + 1, obj['f'][i, 1, 0] + 1, obj['f'][i, 2, 0] + 1))
         # exit(0)
 
@@ -263,6 +273,8 @@ def main(model_folder,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='SMPL-X Demo')
     parser.add_argument('--dataroot', type=str)
+    parser.add_argument('--result', type=str)
+    parser.add_argument('--T', type=int)
     parser.add_argument('--model-folder', required=True, type=str,
                         help='The path to the model folder')
     parser.add_argument('--model-type', default='smplx', type=str,
@@ -284,7 +296,7 @@ if __name__ == '__main__':
     num_betas = args.num_betas
     num_expression_coeffs = args.num_expression_coeffs
 
-    main(model_folder, model_type, args.dataroot,
+    main(model_folder, model_type, args.dataroot, args.result, args.T,
          gender=gender,
          num_betas=num_betas,
          num_expression_coeffs=num_expression_coeffs)
