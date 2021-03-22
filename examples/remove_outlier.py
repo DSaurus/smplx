@@ -3,9 +3,14 @@ from tqdm import tqdm
 import numpy as np
 import queue
 import sys
+import os
 
-for subject in tqdm(range(202, 260-2)):
-    obj = t3.readobj('fusion/single_test/fused_%d.obj' % subject)
+single_name = 'C:\\code\Multiview_Pair-master\\results\\cmu_1500\\cmu6.obj'
+dataroot = 'C:\\code\\Multiview_Pair-master\\results\\0309three2\\fusion'
+for subject in tqdm(range(431, 700)):
+    obj = t3.readobj(os.path.join(dataroot, 'fused_%d.obj' % subject))
+    # obj = t3.readobj('C:\\code\\Multiview_Pair-master\\results\\mh_single/our.obj')
+    # obj = t3.readobj(single_name)
     edges = {}
     visit = np.zeros(obj['vi'].shape[0])
     color = np.zeros(obj['vi'].shape[0])
@@ -42,7 +47,9 @@ for subject in tqdm(range(202, 260-2)):
         if max_sum < sum:
             max_sum = sum
             max_color = t
-    file = open('fusion/single_test/cleaned_%d.obj' % subject, 'w')
+    file = open(os.path.join(dataroot, 'clean_%d.obj' % subject), 'w')
+    # file = open('C:\\code\\Multiview_Pair-master\\results\\mh_single/our.obj', 'w')
+    # file = open(single_name, 'w')
     for v in obj['vi']:
         file.write('v %.4f %.4f %.4f\n' % (v[0], v[1], v[2]))
     for f in obj['f']:
@@ -52,3 +59,4 @@ for subject in tqdm(range(202, 260-2)):
         f_plus = f + 1
         file.write('f %d %d %d\n' % (f_plus[0], f_plus[1], f_plus[2]))
     file.close()
+    # exit(0)
