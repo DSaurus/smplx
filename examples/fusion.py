@@ -10,6 +10,7 @@ import argparse
 import os
 
 
+os.environ["KMP_DUPLICATE_LIB_OK"]="True"
 def save_obj_mesh(mesh_path, verts, faces):
     file = open(mesh_path, 'w')
 
@@ -20,18 +21,53 @@ def save_obj_mesh(mesh_path, verts, faces):
         file.write('f %d %d %d\n' % (f_plus[0], f_plus[1], f_plus[2]))
     file.close()
 
+def cross_3d(a, b):
+    return np.array([a[1]*b[2]-a[2]*b[1], b[0]*a[2]-a[0]*b[2], a[0]*b[1]-b[0]*a[1]])
+
+def calc_normal(smpl):
+    vi = smpl['vi']
+    vn = np.zeros((vi.shape[0], 3))
+    for f in smpl['f']:
+        a, b, c = vi[f[0, 0]], vi[f[1, 0]], vi[f[2, 0]]
+        n = cross_3d(c-a, b-a)
+        vn[f[0, 0]] += n
+        vn[f[1, 0]] += n
+        vn[f[2, 0]] += n
+    vn = vn / np.sqrt(np.sum(vn**2, axis=1)).reshape((-1, 1))
+    return vn
+
+def read_and_clean(name, D):
+    mesh = trimesh.load(name)
+    vert = mesh.vertices
+    normal = mesh.vertex_normals
+    print(vert.shape)
+    print(normal.shape)
+    faces, vertices = poisson_reconstruction(vert, normal, depth=D, scale=1.05)
+    obj = {}
+    obj['vi'] = vertices
+    obj['vt'] = None
+    obj['vn'] = None
+    obj['f'] = faces.reshape((faces.shape[0], 3, 1))
+    return obj
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='SMPL-X Demo')
     parser.add_argument('--dataroot', type=str)
     parser.add_argument('--result', type=str)
+    parser.add_argument('--start', type=int)
+    parser.add_argument('--end', type=int)
+    parser.add_argument('--D', type=int)
     args = parser.parse_args()
+    D = args.D
     os.makedirs(args.result, exist_ok=True)
-    for subject in tqdm(range(202, 1199)):
-        ti.init(ti.cpu)
+    for subject in tqdm(range(args.start, args.end)):
+        ti.init(ti.cuda)
         scene = t3.Scene()
         light = t3.Light()
         scene.add_light(light)
-        mesh0 = t3.readobj(os.path.join(args.dataroot, 'inference_eval_%d_0.obj' % subject))
+        mesh0 = read_and_clean(os.path.join(args.dataroot, 'inference_eval_%d_0.obj' % subject), D)
+        # mesh0 = read_and_clean(os.path.join(args.dataroot, 'cmu%d.obj' % subject), D)
         mesh0['vi'] = mesh0['vi'][:, :3]
         b_max = np.max(mesh0['vi'], axis=0).reshape((-1, 3))
         b_min = np.min(mesh0['vi'], axis=0).reshape((-1, 3))
@@ -67,11 +103,12 @@ if __name__ == '__main__':
             c_depth_list[id] = []
             c_pos_list[id] = []
             c_nms_list[id] = []
-            ti.init(ti.cpu)
+            ti.init(ti.cuda)
             scene = t3.Scene()
             light = t3.Light()
             scene.add_light(light)
-            mesh = t3.readobj(os.path.join(args.dataroot, 'inference_eval_%d_%d.obj' % (subject, id)))
+            mesh = read_and_clean(os.path.join(args.dataroot, 'inference_eval_%d_%d.obj' % (subject, id)), D)
+            # mesh = read_and_clean(os.path.join(args.dataroot, 'cmu%d.obj' % subject), D)
             mesh['vi'] = mesh['vi'][:, :3]
             mesh['vi'] -= (b_max + b_min) / 2
             model = t3.Model(obj=mesh)
@@ -95,13 +132,14 @@ if __name__ == '__main__':
         pts_list = []
         nms_list = []
         print(len(c_depth_list))
+        threshold = 0.01
         for i in range(8):
             ind1 = np.logical_and(c_depth_list[0][i] > 0,
-                        np.logical_or(np.abs(c_depth_list[0][i] - c_depth_list[-1][i]) < 0.01, np.abs(c_depth_list[0][i] - c_depth_list[1][i]) < 0.01))
+                        np.logical_or(np.abs(c_depth_list[0][i] - c_depth_list[-1][i]) < threshold, np.abs(c_depth_list[0][i] - c_depth_list[1][i]) < threshold))
             ind2 = np.logical_and(c_depth_list[-1][i] > 0,
-                        np.logical_or(np.abs(c_depth_list[-1][i] - c_depth_list[0][i]) < 0.01, np.abs(c_depth_list[-1][i] - c_depth_list[1][i]) < 0.01))
+                        np.logical_or(np.abs(c_depth_list[-1][i] - c_depth_list[0][i]) < threshold, np.abs(c_depth_list[-1][i] - c_depth_list[1][i]) < threshold))
             ind3 = np.logical_and(c_depth_list[1][i] > 0,
-                        np.logical_or(np.abs(c_depth_list[1][i] - c_depth_list[0][i]) < 0.01, np.abs(c_depth_list[1][i] - c_depth_list[-1][i]) < 0.01))
+                        np.logical_or(np.abs(c_depth_list[1][i] - c_depth_list[0][i]) < threshold, np.abs(c_depth_list[1][i] - c_depth_list[-1][i]) < threshold))
             ind_cnt = (ind1.astype(int)+ind2.astype(int)+ind3.astype(int))
             ind = (ind1.astype(int)+ind2.astype(int)+ind3.astype(int)) >= 2
             print(np.sum(ind1), np.sum(ind2), np.sum(ind3))
@@ -141,7 +179,7 @@ if __name__ == '__main__':
         # nms_list.append(nms)
         points = np.concatenate(pts_list, 0)
         normals = np.concatenate(nms_list, 0)
-        faces, vertices = poisson_reconstruction(points, normals, depth=9)
+        faces, vertices = poisson_reconstruction(points, normals, depth=D, scale=1.05)
         vertices += (b_max + b_min) / 2
         save_obj_mesh(os.path.join(args.result, 'fused_%d.obj' % subject), vertices, faces)
         # mesh0 = trimesh.load('fusion/single_test/inference_eval_%d_0.obj' % subject)
