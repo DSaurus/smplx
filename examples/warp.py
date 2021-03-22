@@ -47,7 +47,7 @@ def skinning(lbs, A, verts):
     return v_homo[:, :, :3, 0]
 
 def main(model_folder,
-         model_type, dataroot, result_dir, T,
+         model_type, dataroot, result_dir, T, start, end,
          ext='npz',
          gender='neutral',
          num_betas=10,
@@ -73,7 +73,7 @@ def main(model_folder,
     is_init = False
 
     ti.init(ti.cpu)
-    obj = t3.readobj(os.path.join(dataroot, 'smplx', '250', 'smplx.obj'))
+    obj = t3.readobj(os.path.join(dataroot, 'smplx', str(args.start), 'smplx.obj'))
     obj['vi'][:, 0] = -obj['vi'][:, 0]
     obj['vi'][:, 2] = -obj['vi'][:, 2]
     # taichi show
@@ -99,7 +99,7 @@ def main(model_folder,
     cv2.namedWindow('view_0')
     cv2.imshow('view_0', np.zeros((512, 512, 3)))
 
-    for subject in tqdm(range(431, 730)):
+    for subject in tqdm(range(args.start, args.end)):
         obj = t3.readobj(os.path.join(dataroot, 'smplx', '%d' % (subject+T), 'smplx.obj'))
         obj['vi'][:, 0] = -obj['vi'][:, 0]
         obj['vi'][:, 2] = -obj['vi'][:, 2]
@@ -238,7 +238,7 @@ def main(model_folder,
         obj_lbs_weights = torch.cat([model.lbs_weights[result[:, i], :].unsqueeze(0) for i in range(K)], 0)
         obj_lbs_weights = obj_lbs_weights.permute(1, 2, 0).detach().cpu()
         dists = torch.FloatTensor(dists)
-        sigma = 0.05
+        sigma = 0.1
         dists = torch.exp(-dists / sigma**2)
         obj_lbs_weights = obj_lbs_weights * dists.unsqueeze(1) / torch.sum(dists, dim=1).reshape(-1, 1, 1)
         obj_lbs_weights = torch.sum(obj_lbs_weights, dim=2)
@@ -246,12 +246,15 @@ def main(model_folder,
         lbs_weights = model.lbs_weights
         A = model(betas=betas0, expression=expression0, body_pose=pose0, transl=trans0, global_orient=g_o0, return_weight=True).vertices
         A_inv = torch.inverse(A.reshape(-1, 4, 4))
+        A2 = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o,
+                   return_weight=True).vertices
+        A2 = A2.reshape(-1, 4, 4)
+        B = torch.zeros_like(A2)
+        for i in range(A2.shape[0]):
+            B[i] = A2[i] @ A_inv[i]
         m_verts = torch.FloatTensor(m_verts).unsqueeze(0)
         m_verts -= trans0.reshape(1, 1, 3).detach().cpu()
-        verts = skinning(obj_lbs_weights, A_inv, m_verts)
-
-        A2 = model(betas=betas, expression=expression, body_pose=pose, transl=trans, global_orient=g_o, return_weight=True).vertices
-        verts = skinning(obj_lbs_weights, A2, verts)
+        verts = skinning(obj_lbs_weights, B, m_verts)
         verts += trans.reshape(1, 1, 3).detach().cpu()
         # print(verts)
         # print(verts.shape)
@@ -259,7 +262,7 @@ def main(model_folder,
         distance = np.sqrt(np.sum((verts - origin_verts)**2, axis=1))
         # print(distance)
         # print(np.sum(distance > 0.03))
-        distance[distance > 0.06] = 1e3
+        distance[distance > 0.12] = 1e3
         f = open(os.path.join(result_dir, 'inference_eval_%d_%d.obj' % (subject, T)), 'w')
         for i in range(verts.shape[0]):
             f.write('v %f %f %f\n' % (-verts[i, 0], verts[i, 1], -verts[i, 2]))
@@ -275,6 +278,8 @@ if __name__ == '__main__':
     parser.add_argument('--dataroot', type=str)
     parser.add_argument('--result', type=str)
     parser.add_argument('--T', type=int)
+    parser.add_argument('--start', type=int)
+    parser.add_argument('--end', type=int)
     parser.add_argument('--model-folder', required=True, type=str,
                         help='The path to the model folder')
     parser.add_argument('--model-type', default='smplx', type=str,
@@ -296,7 +301,7 @@ if __name__ == '__main__':
     num_betas = args.num_betas
     num_expression_coeffs = args.num_expression_coeffs
 
-    main(model_folder, model_type, args.dataroot, args.result, args.T,
+    main(model_folder, model_type, args.dataroot, args.result, args.T, args.start, args.end,
          gender=gender,
          num_betas=num_betas,
          num_expression_coeffs=num_expression_coeffs)
